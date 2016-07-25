@@ -1,0 +1,123 @@
+---
+title: "Spanish Translation A/B Testing"
+author: "Ya Yu"
+date: "July 23, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Challenge Description
+
+Company XYZ is a worldwide e-commerce site with localized versions of the site.
+
+A data scientist at XYZ noticed that Spain-based users have a much higher conversion rate than any other Spanish-speaking country. She therefore went and talked to the international team in charge of Spain And LatAm to see if they had any ideas about why that was happening.
+
+Spain and LatAm country manager suggested that one reason could be translation. All Spanish-speaking countries had the same translation of the site which was written by a Spaniard. They agreed to try a test where each country would have its one translation written by a local. That is, Argentinian users would see a translation written by an Argentinian, Mexican users by a Mexican and so on. Obviously, nothing would change for users from Spain.
+
+After they run the test however, they are really surprised cause the test is negative. I.e., it appears that the non-localized translation was doing better!
+
+You are asked to:
+ 1. Confirm that the test is actually negative. That is, it appears that the old version of the site with just one translation across Spain and LatAm performs better
+ 2. Explain why that might be happening. Are the localized translations really worse?
+
+## Data Preparation
+
+```{r include=FALSE, echo=TRUE}
+library(ggplot2)
+library(dplyr)
+library(rpart)
+```
+
+```{r}
+#Read Data
+user = read.csv("user_table.csv")
+test = read.csv("test_table.csv")
+
+#Check if user is unique by user id
+length(user$user_id)==length(unique(user$user_id))
+#Check if test is unique by user id
+length(test$user_id)==length(unique(test$user_id))
+#we find some user in test not found in user.
+identical(test$user_id,user$user_id) 
+length(user$user_id)-length(test$user_id)
+```
+
+```{r}
+#Merge user and test tables to one
+df=merge(user, test, by = "user_id",all.x = TRUE)
+#Format the date
+df$date=as.Date(df$date)
+summary(df)
+```
+
+## Does Spain have higher conversion rate than other countries?
+
+```{r}
+#Make sure Spain having a higher conversion rate
+ConversionByCountry=df%>%
+  group_by(country)%>%
+  summarise(conversion=mean(conversion[test==0])
+        )%>%
+  arrange(desc(conversion))
+head(ConversionByCountry)
+```
+
+## Does local translation perform worse?
+
+```{r}
+#Exclude the Spain users because Spain is not in the test.
+control_test=subset(df, country!="Spain")
+#T two sample test, find the conversion rate for control group and test group
+t.test(control_test$conversion[control_test$test==1],control_test$conversion[control_test$test==0])
+```
+
+From T test result, we can see a significant difference between control group conversion rate and test group conversion rate. For the test group, the conversion rate is 0.0434. For the control group, the conversion rate is 0.048, which is 10% higher than the test group. Local translation did worse than the control group.
+
+## Why?
+
+Some possible reasons for weird A/B testing result are:
+
+1. Not enough data
+2. Some bias is introduced
+
+First, if we do not have enough data, result would be fluctuating, therefore, we plot the conversion rate by days to check the variance.
+
+```{r}
+data_test_by_day=control_test%>%
+  group_by(date)%>%
+  summarize(test_vs_control=mean(conversion[test==1])/mean(conversion[test==0]))
+
+ggplot(data=data_test_by_day,aes(x=date, y=test_vs_control))+
+  geom_line()+ylab("test/control")+geom_hline(yintercept=1,linetype=2,color="blue")
+
+```
+
+From the plot, test is always worse than control. That probably means that we do have enough data, but there was some bias in the experiment set up.
+
+Now, it's time to find out if the test is biased. In an ideal world, the distribution of people in test and control for each segment should be the same. One way is to build a decision tree where the variables are the user dimensions and the outcome variable is whether the user is in test or control. If the tree splits, it means  that for given values of that variable you are more likely to end up in test or control. But this should be impossible! Therefore, if the randomization worked, the tree should not split at all (or at least not be able to  separate the two classes well).
+
+```{r}
+tree=rpart(test~.,control_test[,-8],control=rpart.control(minbucket=nrow(control_test)/100,max_depth=2))
+
+tree
+```
+
+The randomization is perfect for the countries on one side of the split. the test/control ratio is 0.498. but in Argentina and Uruguay together have 80% test and 20% of control.
+
+Check the conversion rate for each country
+```{r}
+data_test_by_country=control_test%>%
+  group_by(country)%>%
+  summarize(p_value=t.test(conversion[test==1],conversion[test==0])$p.value,
+            conversion_test=t.test(conversion[test==1],conversion[test==0])$estimate[1],
+            conversion_control=t.test(conversion[test==1],conversion[test==0])$estimate[2]
+  )%>%
+  arrange(p_value)
+
+data_test_by_country
+```
+
+After we control for country, the test clearly appears non significant. Not a great success given that the goal was to improve conversion rate, but a localized translation did not make worse.
